@@ -663,6 +663,52 @@ jobs:
           PY
           grep -n signingConfig app/build.gradle.kts || true
 
+      - name: Add RemoveNotificationWhiteList
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/systemui/RemoveNotificationWhiteList.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.systemui
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.getStaticFieldOrNullAs
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.core.putField
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object RemoveNotificationWhiteList : BaseHook() {
+              override val key = "notification_settings_no_white_list"
+              override val isEnabled get() = true
+
+              private fun allowAll(): ArrayList<Any?> = object : ArrayList<Any?>() {
+                  override fun contains(element: Any?): Boolean = true
+              }
+
+              private fun inject(target: Any?) {
+                  if (target == null) return
+                  runCatching { target.putField("mAllowFloatPackages", allowAll()) }
+                  runCatching { target.putField("mAllowKeyguardPackages", allowAll()) }
+                  runCatching { target.putField("mCanShowBadgePackages", allowAll()) }
+              }
+
+              override fun hook() {
+                  val clazz = loadClass("com.miui.systemui.notification.NotificationSettingsManager")
+
+                  runCatching {
+                      inject(clazz.getStaticFieldOrNullAs<Any>("sINSTANCE"))
+                  }
+
+                  listOf("onCloudDataUpdated", "onLocalDataUsed").forEach { methodName ->
+                      clazz.findAllMethods { name(methodName) }.createHooks {
+                          after { param -> inject(param.thisObject) }
+                      }
+                  }
+              }
+          }
+          EOF
+          echo "RemoveNotificationWhiteList.kt added"
+
       - name: Patch scope list
         run: |
           set -e
