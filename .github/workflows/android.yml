@@ -300,6 +300,138 @@ jobs:
           ''', encoding="utf-8")
           print("patched: ShowNotificationImportance, NotificationSettingsNoWhiteList")
           PY
+      - name: Add notification and security hooks
+        run: |
+          set -e
+          B=app/src/main/java/com/yifeplayte/wommo/hook/hooks
+
+          cat > "$B/singlepackage/settings/AllowManageAllNotifications.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.settings
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.findMethod
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object AllowManageAllNotifications : BaseHook() {
+              override val key = "allow_manage_all_notifications"
+              override val isEnabled get() = true
+
+              private val settingsClasses = arrayOf(
+                  "com.android.settings.notification.app.AppNotificationSettings",
+                  "com.android.settings.notification.app.ChannelNotificationSettings",
+                  "com.android.settings.notification.AppNotificationSettings",
+                  "com.android.settings.notification.ChannelNotificationSettings",
+              )
+
+              override fun hook() {
+                  settingsClasses.forEach { className ->
+                      runCatching {
+                          loadClass(className)
+                              .findAllMethods { name("setupBlock") }
+                              .createHooks {
+                                  after { param ->
+                                      runCatching { enableBlockPreference(param.thisObject) }
+                                  }
+                              }
+                      }
+                  }
+                  runCatching {
+                      val channel = loadClass("android.app.NotificationChannel")
+                      channel.findMethod { name("isBlockable") }.createHook {
+                          before { param -> param.result = true }
+                      }
+                      channel.findAllMethods { name("setBlockable") }.createHooks {
+                          before { param -> param.args[0] = true }
+                      }
+                  }
+              }
+
+              private fun enableBlockPreference(fragment: Any) {
+                  val findPreference = fragment.javaClass.methods.firstOrNull {
+                      it.name == "findPreference" && it.parameterCount == 1
+                  } ?: return
+                  val preference = findPreference.invoke(fragment, "block") ?: return
+                  preference.javaClass
+                      .getMethod("setEnabled", Boolean::class.javaPrimitiveType!!)
+                      .invoke(preference, true)
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/securitycenter/DisableSafepayAutoScan.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableSafepayAutoScan : BaseHook() {
+              override val key = "disable_safepay_auto_scan"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  runCatching {
+                      loadClass("w4.l").findAllMethods { name("n") }.createHooks {
+                          before { param -> param.result = false }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/securitycenter/DisableRootDetection.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableRootDetection : BaseHook() {
+              override val key = "disable_root_detection"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  runCatching {
+                      loadClass("w4.k").findAllMethods { name("f") }.createHooks {
+                          before { param -> param.result = false }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/securitycenter/BypassAdbInstallVerify.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object BypassAdbInstallVerify : BaseHook() {
+              override val key = "bypass_adb_install_verify"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  runCatching {
+                      loadClass("com.miui.permcenter.install.AdbInstallVerifyActivity\$b")
+                          .findAllMethods { name("a") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
       - name: Patch upstream hooks (channel + menu)
         run: |
           set -e
