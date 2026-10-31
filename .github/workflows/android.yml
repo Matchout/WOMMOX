@@ -508,6 +508,72 @@ jobs:
           EOF
           echo "RemoveXlDownload.kt rewritten"
 
+      - name: Restore AddOpenByDefaultEntry to upstream
+        run: |
+          git checkout -- app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/AddOpenByDefaultEntry.kt
+          echo "AddOpenByDefaultEntry.kt restored"
+
+      - name: Add AddOpenByDefaultMenuEntry
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/AddOpenByDefaultMenuEntry.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import android.app.Activity
+          import android.view.Menu
+          import android.view.MenuItem
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+
+          @Suppress("unused")
+          object AddOpenByDefaultMenuEntry : BaseHook() {
+              override val key = "add_open_by_default_entry"
+
+              private const val MENU_ID = 235864065
+
+              override fun hook() {
+                  val clazz = loadClass("com.miui.appmanager.ApplicationsDetailsActivity")
+
+                  val createMenu = clazz.findMethodOrNull {
+                      name("onCreateOptionsMenu")
+                      params(Menu::class.java)
+                  }
+                  if (createMenu != null) {
+                      createMenu.createHook {
+                          after { param ->
+                              val menu = param.args[0] as? Menu
+                              if (menu != null && menu.findItem(MENU_ID) == null) {
+                                  menu.add(0, MENU_ID, 0, "默认打开")
+                              }
+                          }
+                      }
+                  }
+
+                  val selectItem = clazz.findMethodOrNull {
+                      name("onOptionsItemSelected")
+                      params(MenuItem::class.java)
+                  }
+                  if (selectItem != null) {
+                      selectItem.createHook {
+                          before { param ->
+                              val item = param.args[0] as? MenuItem
+                              if (item != null && item.itemId == MENU_ID) {
+                                  val activity = param.thisObject as? Activity
+                                  if (activity != null) {
+                                      AddOpenByDefaultEntry.e(activity)
+                                      param.result = true
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+          echo "AddOpenByDefaultMenuEntry.kt added"
+
       - name: Patch scope list
         run: |
           set -e
