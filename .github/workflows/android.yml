@@ -414,6 +414,100 @@ jobs:
           p.write_text(src, encoding="utf-8")
           print("patched: RedirectToNotificationChannelSetting, AddOpenByDefaultEntry")
           PY
+      - name: Fix AddOpenByDefaultEntry null-safe
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path(
+              "app/src/main/java/com/yifeplayte/wommo/hook/hooks/"
+              "singlepackage/securitycenter/AddOpenByDefaultEntry.kt"
+          )
+          src = p.read_text(encoding="utf-8")
+
+          if "core.findMethodOrNull" not in src:
+              src = src.replace(
+                  "import io.github.lingqiqi5211.ezhooktool.core.findMethod\n",
+                  "import io.github.lingqiqi5211.ezhooktool.core.findMethod\n"
+                  "import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull\n",
+                  1,
+              )
+
+          before = src
+          src = src.replace(
+              'findMethod { name("initView") }',
+              'findMethodOrNull { name("initView") }?',
+          )
+          src = src.replace(
+              'findMethod { name("onClick") }',
+              'findMethodOrNull { name("onClick") }?',
+          )
+          src = src.replace(
+              "findMethod {\n        name(",
+              "findMethodOrNull {\n        name(",
+          )
+          src = src.replace("}.createHook {", "}?.createHook {")
+          assert src != before, "AddOpenByDefaultEntry patch not applied"
+          p.write_text(src, encoding="utf-8")
+          print("AddOpenByDefaultEntry: initView/onClick made null-safe")
+          PY
+
+      - name: Rewrite RemoveXlDownload
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/downloadprovider/RemoveXlDownload.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.downloadprovider
+
+          import android.content.Context
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+          import java.io.File
+
+          @Suppress("unused")
+          object RemoveXlDownload : BaseHook() {
+              override val key = "remove_xl_download"
+
+              override fun hook() {
+                  // 把迅雷引擎日志目录从 /storage/emulated/0/.xlDownload 改到应用私有目录
+                  loadClass("com.android.providers.downloads.config.XLConfig")
+                      .findMethodOrNull {
+                          name("setDebug")
+                          params(
+                              Context::class.java,
+                              java.lang.Boolean.TYPE,
+                              String::class.java
+                          )
+                      }
+                      ?.createHook {
+                          before { param ->
+                              val ctx = param.args[0] as? Context ?: return@before
+                              val safeDir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "xl")
+                              param.args[2] = File(safeDir, "dp.log").absolutePath
+                          }
+                      }
+
+                  // 兜底：任何仍指向根目录 .xlDownload 的建目录请求一律拒绝
+                  loadClass("com.android.providers.downloads.util.FileUtil")
+                      .findMethodOrNull {
+                          name("createFile")
+                          params(String::class.java)
+                      }
+                      ?.createHook {
+                          before { param ->
+                              val path = param.args[0] as? String ?: return@before
+                              if (path.contains(".xlDownload")) {
+                                  param.result = null
+                              }
+                          }
+                      }
+              }
+          }
+          EOF
+          echo "RemoveXlDownload.kt rewritten"
+
       - name: Patch scope list
         run: |
           set -e
