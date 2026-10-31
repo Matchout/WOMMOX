@@ -432,6 +432,61 @@ jobs:
               }
           }
           EOF
+
+          cat > "$B/singlepackage/securitycenter/LockOneHundredPoints.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import android.content.Context
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object LockOneHundredPoints : BaseHook() {
+              override val key = "lock_one_hundred_points"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  listOf(
+                      "com.miui.securityscan.ui.main.MainContentFrame",
+                      "com.miui.securityscan.ui.main.MainContentFrameFold",
+                      "com.miui.securityscan.ui.main.MainContentFrameLite",
+                  ).forEach { className ->
+                      runCatching {
+                          loadClass(className)
+                              .findAllMethods { name("onClick") }
+                              .createHooks {
+                                  before { param -> param.result = null }
+                              }
+                      }
+                  }
+                  runCatching {
+                      val scoreManager = loadClass("com.miui.securityscan.scanner.ScoreManager")
+                      scoreManager.findAllMethods { name("q") }.createHooks {
+                          before { param -> param.result = 0 }
+                      }
+                      scoreManager.findAllMethods { name("j") }.createHooks {
+                          before { param -> param.result = 100 }
+                      }
+                      scoreManager.findAllMethods { name("c") }.createHooks {
+                          before { param -> param.result = null }
+                      }
+                  }
+                  // 缓存路径：MainContentFrame.s(I) 直接读 key_score_in_security，绕开 ScoreManager
+                  runCatching {
+                      loadClass("aj.z")
+                          .findAllMethods {
+                              name("s")
+                              params(Context::class.java)
+                          }
+                          .createHooks {
+                              before { param -> param.result = 100 }
+                          }
+                  }
+              }
+          }
+          EOF
       - name: Patch upstream hooks (channel + menu)
         run: |
           set -e
