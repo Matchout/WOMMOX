@@ -5,6 +5,10 @@ on:
   push:
     branches: [ "main" ]
 
+env:
+  VERSION_CODE: ${{ github.run_number }}
+  VERSION_NAME: 2.0.${{ github.run_number }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -508,10 +512,10 @@ jobs:
           EOF
           echo "RemoveXlDownload.kt rewritten"
 
-      - name: Restore AddOpenByDefaultEntry to upstream
+      - name: Drop AddOpenByDefaultEntry (initView missing on this ROM)
         run: |
-          git checkout -- app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/AddOpenByDefaultEntry.kt
-          echo "AddOpenByDefaultEntry.kt restored"
+          rm -f app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/AddOpenByDefaultEntry.kt
+          echo "AddOpenByDefaultEntry.kt removed"
 
       - name: Add AddOpenByDefaultMenuEntry
         run: |
@@ -589,6 +593,76 @@ jobs:
           EOF
           echo "AddOpenByDefaultMenuEntry.kt added"
 
+      - name: Set app version
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path("app/build.gradle.kts")
+          src = p.read_text(encoding="utf-8")
+          src = src.replace(
+              "versionCode = 1",
+              'versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()',
+              1,
+          )
+          src = src.replace(
+              'versionName = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())',
+              'versionName = System.getenv("VERSION_NAME") ?: "UNVERSIONED"',
+              1,
+          )
+          assert 'System.getenv("VERSION_CODE")' in src, "versionCode not patched"
+          assert 'System.getenv("VERSION_NAME")' in src, "versionName not patched"
+          p.write_text(src, encoding="utf-8")
+          print("app version patched")
+          PY
+          grep -nE "versionCode|versionName" app/build.gradle.kts
+          echo "VERSION_CODE=$VERSION_CODE VERSION_NAME=$VERSION_NAME"
+
+      - name: Remove GooglePlayServices feature
+        run: |
+          set -e
+          H=app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage
+          rm -f "$H/googleplayservices/FakeHotspotDisabledForQuickShare.kt"
+          rm -f "$H/GooglePlayServices.kt"
+          rm -f app/src/main/java/com/yifeplayte/wommo/activity/sections/GooglePlayServices.kt
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path("app/src/main/java/com/yifeplayte/wommo/activity/pages/HomePage.kt")
+          lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+          out = [
+              line for line in lines
+              if "activity.sections.googlePlayServices" not in line
+              and line.strip() != "googlePlayServices()"
+          ]
+          removed = len(lines) - len(out)
+          assert removed == 2, "expected exactly 2 lines removed, got %d" % removed
+          p.write_text("".join(out), encoding="utf-8")
+          print("HomePage.kt: googlePlayServices() removed")
+          PY
+          echo "GooglePlayServices feature removed"
+
+      - name: Make unsigned release
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          p = pathlib.Path("app/build.gradle.kts")
+          src = p.read_text(encoding="utf-8")
+          src, n = re.subn(
+              r'\n[ \t]*signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)',
+              '',
+              src,
+          )
+          assert n == 1, "expected exactly 1 signingConfig line, got %d" % n
+          p.write_text(src, encoding="utf-8")
+          print("release signingConfig removed -> unsigned APK")
+          PY
+          grep -n signingConfig app/build.gradle.kts || true
+
       - name: Patch scope list
         run: |
           set -e
@@ -615,9 +689,10 @@ jobs:
           set -e
           ls -l app/build/outputs/apk/release/
           sha256sum app/build/outputs/apk/release/*.apk
+          echo "NOTE: this APK is UNSIGNED - sign it in MT before installing."
 
       - uses: actions/upload-artifact@v4
         with:
-          name: wommo-v24-sync
+          name: wommo-${{ env.VERSION_NAME }}-unsigned
           path: app/build/outputs/apk/release/*.apk
           if-no-files-found: error
