@@ -719,7 +719,7 @@ jobs:
           @Suppress("unused")
           object DiagnoseDialogShow : BaseHook() {
               override val key = "diagnose_dialog_show"
-              override val isEnabled get() = true
+              override val isEnabled get() = false
 
               override fun hook() {
                   // 诊断用：谁弹的窗，栈里直接看得到
@@ -756,8 +756,9 @@ jobs:
           @Suppress("unused")
           object DisableOfflineUnregisteredPopup : BaseHook() {
               override val key = "disable_offline_unregistered_popup"
-              // 诊断期停用，避免干扰探针观察真实流程
-              override val isEnabled get() = false
+              // 日志已证实：点“继续安装”→ 仅显示 single_authorize_btn 菜单；点菜单 → InstallProgressActivity →
+              //   start normal install（全程无验证弹框）。因此 b2 直接走 T0(false,true) 可一步到安装
+              override val isEnabled get() = true
 
               override fun hook() {
                   // t2.r.b2(this, view) = “安装”按钮点击 → new Lr2/C(...).e(...)
@@ -809,7 +810,7 @@ jobs:
           @Suppress("unused")
           object DiagnoseInstallFlow : BaseHook() {
               override val key = "diagnose_install_flow"
-              override val isEnabled get() = true
+              override val isEnabled get() = false
 
               private const val TAG = "WOMMO_DIAG"
 
