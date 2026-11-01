@@ -756,25 +756,91 @@ jobs:
           @Suppress("unused")
           object DisableOfflineUnregisteredPopup : BaseHook() {
               override val key = "disable_offline_unregistered_popup"
-              override val isEnabled get() = true
+              // 诊断期停用，避免干扰探针观察真实流程
+              override val isEnabled get() = false
 
               override fun hook() {
                   // t2.r.b2(this, view) = “安装”按钮点击 → new Lr2/C(...).e(...)
                   //   → 弹 offline_unregistered_install_popup（风险提示 / 无法进行联网检测）
                   // 用户点“继续安装”的真实链路：Lt2/f.onClick → t2.r.c1 → d2 → t2.r.n0()
                   // d2 只用 this$0 调 n0()，不碰 dialog，所以可直短路弹窗并继续安装
+                  // 回退（2026-11-01）：实测 t2.r.n0() 是「取消安装」（进入 CancelInstall 页）
+                  //   Lt2/e.onClick → t2.r.p1 → c2 = 仅把 MenuItem 设为可见（引导去“单次安装授权”）
+                  //   Lt2/f.onClick → t2.r.c1 → d2 → n0() = 取消
+                  //   两个按钮都不是“直接安装”，当前 hook 停用，待定位授权后的真实安装入口
+                  // 弹窗按钮实测：Lt2/e → c2（仅显示“单次安装授权”菜单）；Lt2/f → c1→d2→n0()（取消）
+                  // “单次安装授权”真实链：MenuItem → NewInstallerPrepareActivity.J1()
+                  //   → Z1() → q2.c.T0(false,true) → J0(activity,false) → o2.d.i(...) 启动安装
+                  // 所以点“安装”时直接走 T0(false,true)，等价于用户去点了那个授权入口
                   runCatching {
                       val installerView = loadClass("t2.r")
-                      val continueInstall = installerView
-                          .getDeclaredMethod("n0")
-                          .apply { isAccessible = true }
-                      installerView.findAllMethods { name("b2") }.createHooks {
-                          before { param ->
-                              param.result = null
-                              runCatching { continueInstall.invoke(param.args[0]) }
+                      val bool = Boolean::class.javaPrimitiveType!!
+                      var cls: Class<*>? = installerView
+                      var target: java.lang.reflect.Method? = null
+                      while (cls != null && cls != Any::class.java && target == null) {
+                          target = runCatching {
+                              cls!!.getDeclaredMethod("T0", bool, bool).apply { isAccessible = true }
+                          }.getOrNull()
+                          cls = cls.superclass
+                      }
+                      val t0 = target
+                      if (t0 != null) {
+                          installerView.findAllMethods { name("b2") }.createHooks {
+                              before { param ->
+                                  param.result = null
+                                  runCatching { t0.invoke(param.args[0], false, true) }
+                              }
                           }
                       }
                   }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DiagnoseInstallFlow.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import android.util.Log
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DiagnoseInstallFlow : BaseHook() {
+              override val key = "diagnose_install_flow"
+              override val isEnabled get() = true
+
+              private const val TAG = "WOMMO_DIAG"
+
+              private fun hookAll(className: String, methodName: String, isBefore: Boolean, msg: (Array<Any?>) -> String) {
+                  runCatching {
+                      loadClass(className).findAllMethods { name(methodName) }.createHooks {
+                          if (isBefore) {
+                              before { p -> runCatching { Log.i(TAG, msg(p.args)) } }
+                          } else {
+                              after { p -> runCatching { Log.i(TAG, msg(p.args)) } }
+                          }
+                      }
+                  }
+              }
+
+              override fun hook() {
+                  // 分支条件
+                  hookAll("h2.b", "m", false) { _ -> "h2.b.m() called" }
+                  hookAll("com.android.packageinstaller.utils.u", "b", false) { a ->
+                      if (a.size == 2) "u.a.b(virus=${a[0]}, apk=${a[1]})" else "u.a.b args=${a.size}"
+                  }
+                  // 安装按钮分支
+                  hookAll("t2.r", "a2", true) { a -> "t2.r.a2() entered" }
+                  hookAll("t2.r", "f2", true) { a -> "t2.r.f2() -> 不绑弹窗" }
+                  hookAll("t2.r", "b2", true) { a -> "t2.r.b2() -> 弹窗分支" }
+                  hookAll("r2.C", "e", true) { a -> "r2.C.e() dialog.show()" }
+                  // 授权/安装链路
+                  hookAll("q2.c", "T0", true) { a -> "q2.c.T0 args=${a.joinToString()}" }
+                  hookAll("q2.c", "J0", true) { a -> "q2.c.J0 args=${a.joinToString()}" }
+                  hookAll("o2.d", "h", true) { a -> "o2.d.h() 构建安装框" }
+                  hookAll("o2.d", "e", true) { a -> "o2.d.e type=${a.getOrNull(2)}" }
               }
           }
           EOF
