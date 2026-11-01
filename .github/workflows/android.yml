@@ -1300,6 +1300,41 @@ jobs:
           print(p.read_text(encoding="utf-8"))
           PY
 
+      - name: Patch MainHook - skip bootaware process
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path("app/src/main/java/com/yifeplayte/wommo/hook/MainHook.kt")
+          src = p.read_text(encoding="utf-8")
+
+          FIELD = '    private var processName: String = ""\n'
+          SKIPSET = '    private val skippedProcesses = setOf("com.miui.securitycenter.bootaware")\n'
+          RECORD = '        processName = param.processName\n'
+          GUARD = '        if (processName in skippedProcesses) return\n'
+
+
+          def insert_after(text, anchor, payload):
+              n = text.count(anchor)
+              assert n == 1, "anchor not unique: %r -> %d" % (anchor, n)
+              idx = text.index(anchor) + len(anchor)
+              return text[:idx] + "\n" + payload + text[idx:]
+
+
+          src = insert_after(src, "class MainHook : XposedModule() {", FIELD + SKIPSET)
+          src = insert_after(src, "override fun onModuleLoaded(param: ModuleLoadedParam) {", RECORD)
+          src = insert_after(src, "override fun onPackageLoaded(param: PackageLoadedParam) {", GUARD)
+          src = insert_after(src, "override fun onPackageReady(param: PackageReadyParam) {", GUARD)
+          src = insert_after(src, "private fun installHooks() {", GUARD)
+
+          p.write_text(src, encoding="utf-8")
+          print("MainHook.kt patched: skip com.miui.securitycenter.bootaware")
+          for i, line in enumerate(src.splitlines(), 1):
+              if "skippedProcesses" in line or "processName" in line:
+                  print("  L%d | %s" % (i, line))
+          PY
+
       - name: Assemble release
         run: |
           chmod +x gradlew
