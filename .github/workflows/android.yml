@@ -645,6 +645,41 @@ jobs:
               }
           }
           EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableUnregisteredAppDialog.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableUnregisteredAppDialog : BaseHook() {
+              override val key = "disable_unregistered_app_dialog"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // o1() 里：if (H1()) 弹 newUnregisteredDialog（“风险提示 / 无法进行联网检测 / 单次安装授权”）
+                  // else 走 S1() = showDetailFragment。H1() -> false 即跳过弹窗直接进详情页
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.NewInstallerPrepareActivity")
+                          .findAllMethods { name("H1") }
+                          .createHooks {
+                              before { param -> param.result = false }
+                          }
+                  }
+                  // 云端参数侧：guardprovider 被卸载/网络被拦时不再判为“新未注册”
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.model.CloudParams")
+                          .findAllMethods { name("isNewUnregistered") }
+                          .createHooks {
+                              before { param -> param.result = false }
+                          }
+                  }
+              }
+          }
+          EOF
       - name: Patch upstream hooks (channel + menu)
         run: |
           set -e
