@@ -487,6 +487,125 @@ jobs:
               }
           }
           EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableCloudConfigSync.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableCloudConfigSync : BaseHook() {
+              override val key = "disable_cloud_config_sync"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // i.d() 向线程池提交 i.e()（拉 /v2/cloud_config/query 并写 SharedPreferences "cloudConfig"）
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.i")
+                          .findAllMethods { name("d") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableAppInfoUpload.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableAppInfoUpload : BaseHook() {
+              override val key = "disable_app_info_upload"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // util.a.f(...) 把上传任务丢线程池；实际上传在 util.a.g(...)（POST /avl/upload）
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.util.a")
+                          .findAllMethods { name("f") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.util.a")
+                          .findAllMethods { name("g") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableInstallRiskControl.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableInstallRiskControl : BaseHook() {
+              override val key = "disable_install_risk_control"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // 风控等级：0=无风控；1/2/3 分别弹频繁安装/验证等弹窗（InstallPrepareAlertActivity.e1）
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.model.RiskControlRules")
+                          .findAllMethods { name("getCurrentLevel") }
+                          .createHooks {
+                              before { param -> param.result = 0 }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableSafeModeTip.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableSafeModeTip : BaseHook() {
+              override val key = "disable_safe_mode_tip"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // g(...) 弹 safe_mode_open_default_notice_popup
+                  runCatching {
+                      loadClass("y2.t")
+                          .findAllMethods { name("g") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+                  // b(Context) 处理“默认开启安全守护”（open_safe_mode_by_default）
+                  runCatching {
+                      loadClass("y2.t")
+                          .findAllMethods { name("b") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
       - name: Patch upstream hooks (channel + menu)
         run: |
           set -e
@@ -907,6 +1026,8 @@ jobs:
           lines = [l for l in lines if l != "com.google.android.gms"]
           if "com.android.thememanager" not in lines:
               lines.append("com.android.thememanager")
+          if "com.miui.packageinstaller" not in lines:
+              lines.append("com.miui.packageinstaller")
           p.write_text("\n".join(lines) + "\n", encoding="utf-8")
           print("scope entries:", len(lines))
           print(p.read_text(encoding="utf-8"))
