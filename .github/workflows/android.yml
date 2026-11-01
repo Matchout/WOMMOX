@@ -680,6 +680,104 @@ jobs:
               }
           }
           EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisablePureModeDialog.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisablePureModeDialog : BaseHook() {
+              override val key = "disable_pure_mode_dialog"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // X1() = showPureDialog（Lr2/F$a;->a），“纯净模式”安装管控弹窗
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.NewInstallerPrepareActivity")
+                          .findAllMethods { name("X1") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DiagnoseDialogShow.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import android.util.Log
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DiagnoseDialogShow : BaseHook() {
+              override val key = "diagnose_dialog_show"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // 诊断用：谁弹的窗，栈里直接看得到
+                  listOf(
+                      "miuix.appcompat.app.v",
+                      "miuix.appcompat.app.AlertDialog",
+                  ).forEach { className ->
+                      runCatching {
+                          loadClass(className)
+                              .findAllMethods { name("show") }
+                              .createHooks {
+                                  before {
+                                      Log.e(
+                                          "WOMMO_DIAG",
+                                          "dialog show: " + className + "\n" +
+                                              Log.getStackTraceString(Throwable())
+                                      )
+                                  }
+                              }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableOfflineUnregisteredPopup.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableOfflineUnregisteredPopup : BaseHook() {
+              override val key = "disable_offline_unregistered_popup"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // t2.r.b2(this, view) = “安装”按钮点击 → new Lr2/C(...).e(...)
+                  //   → 弹 offline_unregistered_install_popup（风险提示 / 无法进行联网检测）
+                  // 用户点“继续安装”的真实链路：Lt2/f.onClick → t2.r.c1 → d2 → t2.r.n0()
+                  // d2 只用 this$0 调 n0()，不碰 dialog，所以可直短路弹窗并继续安装
+                  runCatching {
+                      val installerView = loadClass("t2.r")
+                      val continueInstall = installerView
+                          .getDeclaredMethod("n0")
+                          .apply { isAccessible = true }
+                      installerView.findAllMethods { name("b2") }.createHooks {
+                          before { param ->
+                              param.result = null
+                              runCatching { continueInstall.invoke(param.args[0]) }
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
       - name: Patch upstream hooks (channel + menu)
         run: |
           set -e
