@@ -606,6 +606,45 @@ jobs:
               }
           }
           EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableVirusScan.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableVirusScan : BaseHook() {
+              override val key = "disable_virus_scan"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // b0.e(pkg, apkInfo, cont) = NewVirusScanner 入口（suspend，返 Virus?）
+                  //   e() 内部：checkSupported() ? g()（新 SDK/guardprovider AIDL） : f()（legacy）
+                  // 三处都置 null = “未发现病毒”，与“不扫描时返回 null”同语义
+                  runCatching {
+                      val scanner = loadClass("com.miui.packageInstaller.b0")
+                      listOf("e", "f", "g").forEach { methodName ->
+                          runCatching {
+                              scanner.findAllMethods { name(methodName) }.createHooks {
+                                  before { param -> param.result = null }
+                              }
+                          }
+                      }
+                  }
+                  // 上游总开关：k2.h.m(k2.h) 为真才走扫描（k2/h$o$b.invokeSuspend）
+                  runCatching {
+                      loadClass("k2.h")
+                          .findAllMethods { name("m") }
+                          .createHooks {
+                              before { param -> param.result = false }
+                          }
+                  }
+              }
+          }
+          EOF
       - name: Patch upstream hooks (channel + menu)
         run: |
           set -e
