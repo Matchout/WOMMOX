@@ -1335,6 +1335,27 @@ jobs:
                   print("  L%d | %s" % (i, line))
           PY
 
+      - name: Patch securitycenter hook class names for 13.8.0
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          TARGETS = [
+              ("app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/DisableRootDetection.kt", '"w4.k"', '"v4.k"'),
+              ("app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/DisableSafepayAutoScan.kt", '"w4.l"', '"v4.l"'),
+          ]
+
+          for rel, old, new in TARGETS:
+              p = pathlib.Path(rel)
+              assert p.is_file(), "missing source file: %s" % rel
+              src = p.read_text(encoding="utf-8")
+              n = src.count(old)
+              assert n == 1, "%s: expected exactly 1 occurrence of %s, got %d" % (rel, old, n)
+              p.write_text(src.replace(old, new), encoding="utf-8")
+              print("patched %s: %s -> %s" % (p.name, old, new))
+          PY
+
       - name: Assemble release
         run: |
           chmod +x gradlew
