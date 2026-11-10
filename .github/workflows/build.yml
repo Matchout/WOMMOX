@@ -1,0 +1,1354 @@
+name: wommo-v24-sync
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+
+env:
+  VERSION_CODE: ${{ github.run_number }}
+  VERSION_NAME: 2.0.${{ github.run_number }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: true
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Add new hook sources
+        run: |
+          set -e
+          B=app/src/main/java/com/yifeplayte/wommo/hook/hooks
+          mkdir -p "$B/singlepackage/thememanager"
+
+          cat > "$B/singlepackage/Thememanager.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage
+
+          import com.yifeplayte.wommo.hook.hooks.BasePackage
+
+          @Suppress("unused")
+          object Thememanager : BasePackage("com.android.thememanager")
+          EOF
+
+          cat > "$B/singlepackage/system/AllowThirdTheme.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.system
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+
+          @Suppress("unused")
+          object AllowThirdTheme : BaseHook() {
+              override val key = "allow_third_theme"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  val drmManager = loadClass("miui.drm.DrmManager")
+                  val drmResult = loadClass("miui.drm.DrmManager\$DrmResult")
+                  val success = drmResult.getField("DRM_SUCCESS").get(null)
+                  drmManager.declaredMethods
+                      .filter { it.returnType == drmResult }
+                      .forEach { method ->
+                          method.createHook {
+                              before { param -> param.result = success }
+                          }
+                      }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/thememanager/DisableThemeRightsCheck.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.thememanager
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+
+          @Suppress("unused")
+          object DisableThemeRightsCheck : BaseHook() {
+              override val key = "disable_theme_rights_check"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  val drmService = loadClass("com.android.thememanager.controller.online.DrmService")
+                  val drmResult = loadClass("miui.drm.DrmManager\$DrmResult")
+                  val success = drmResult.getField("DRM_SUCCESS").get(null)
+                  drmService.declaredMethods
+                      .filter {
+                          it.name == "q" &&
+                              it.parameterTypes.size == 1 &&
+                              it.returnType.name.contains("DrmResult")
+                      }
+                      .forEach { method ->
+                          method.createHook {
+                              before { param -> param.result = success }
+                          }
+                      }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/system/FrameworkExtensions.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.system
+
+          import android.content.Intent
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object FrameworkExtensions : BaseHook() {
+              override val key = "framework_extensions"
+              override val isEnabled get() = true
+
+              private val blackListFields = listOf(
+                  "FREEFORM_BLACK_LIST",
+                  "ABNORMAL_FREEFORM_BLACK_LIST",
+                  "START_FROM_FREEFORM_BLACK_LIST_ACTIVITY",
+                  "FOREGROUND_PIN_APP_BLACK_LIST",
+              )
+
+              private val blackListMethods = listOf(
+                  "getFreeformBlackList",
+                  "getFreeformBlackListFromCloud",
+                  "getAbnormalFreeformBlackList",
+                  "getAbnormalFreeformBlackListFromCloud",
+                  "getStartFromFreeformBlackList",
+                  "getStartFromFreeformBlackListFromCloud",
+                  "getForegroundPinAppBlackList",
+                  "getForegroundPinAppBlackListFromCloud",
+              )
+
+              override fun hook() {
+                  runCatching { hookFreeformBlackList() }
+                  runCatching { hookFreeformCount() }
+                  runCatching { hookAppLinkVerify() }
+                  runCatching { hookMarketRedirect() }
+                  runCatching { hookDownloadsRedirect() }
+              }
+
+              private fun hookFreeformBlackList() {
+                  val adapter = loadClass("android.util.MiuiMultiWindowAdapter")
+                  blackListFields.forEach { fieldName ->
+                      runCatching {
+                          adapter.getDeclaredField(fieldName).apply { isAccessible = true }
+                              .get(null)
+                              ?.let { (it as? MutableCollection<*>)?.clear() }
+                      }
+                  }
+                  blackListMethods.forEach { methodName ->
+                      adapter.findAllMethods { name(methodName) }.createHooks {
+                          returnConstant(emptyList<String>())
+                      }
+                  }
+              }
+
+              private fun hookFreeformCount() {
+                  loadClass("com.android.server.wm.MiuiFreeFormStackDisplayStrategy")
+                      .findAllMethods { name("getMaxMiuiFreeFormStackCount") }
+                      .createHooks { returnConstant(256) }
+              }
+
+              private fun hookAppLinkVerify() {
+                  loadClass("com.android.server.pm.verify.domain.DomainVerificationUtils")
+                      .findAllMethods { name("isDomainVerificationIntent") }
+                      .createHooks { returnConstant(false) }
+              }
+
+              private fun hookMarketRedirect() {
+                  loadClass("com.android.server.wm.ActivityTaskManagerService")
+                      .findAllMethods { name("startActivity") }
+                      .createHooks {
+                          before { param ->
+                              val args = param.args
+                              val index = args.indexOfFirst { it is Intent }
+                              if (index < 0) return@before
+                              val intent = args[index] as? Intent ?: return@before
+                              if (intent.action != Intent.ACTION_VIEW) return@before
+                              val data = intent.data ?: return@before
+                              val scheme = data.scheme
+                              if (scheme != "market" && scheme != "mimarket") return@before
+                              if (data.host != "details") return@before
+                              if (data.getQueryParameter("id") == null) return@before
+                              val newIntent = Intent(intent)
+                              newIntent.setDataAndType(
+                                  data.buildUpon().scheme("market").path("/detailmini").build(),
+                                  intent.type
+                              )
+                              newIntent.setPackage(null)
+                              newIntent.removeFlags(Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                              args[index] = Intent.createChooser(newIntent, null)
+                          }
+                      }
+              }
+
+              private fun hookDownloadsRedirect() {
+                  loadClass("com.android.server.wm.ActivityStartController")
+                      .findAllMethods { name("startActivityInPackage") }
+                      .createHooks {
+                          before { param ->
+                              val args = param.args
+                              val index = args.indexOfFirst { it is Intent }
+                              if (index < 0) return@before
+                              val intent = args[index] as? Intent ?: return@before
+                              if (intent.action != "android.intent.action.VIEW_DOWNLOADS") return@before
+                              val newIntent = Intent(intent)
+                              newIntent.setPackage(null)
+                              args[index] = Intent.createChooser(newIntent, null)
+                          }
+                      }
+              }
+          }
+          EOF
+      - name: Patch upstream hooks
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          B = pathlib.Path("app/src/main/java/com/yifeplayte/wommo/hook/hooks")
+
+
+          def replace_block(src, signature, new_block):
+              start = src.index(signature)
+              i = src.index("{", start)
+              depth = 0
+              end = -1
+              for j in range(i, len(src)):
+                  if src[j] == "{":
+                      depth += 1
+                  elif src[j] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          end = j + 1
+                          break
+              assert end > 0, signature
+              return src[:start] + new_block + src[end:]
+
+
+          # 1) ShowNotificationImportance: systemUi() 改挂 StackCoordinator 新 hook 点
+          p = B / "multipackage/ShowNotificationImportance.kt"
+          src = p.read_text(encoding="utf-8")
+          new_system_ui = r'''private fun systemUi() {
+              loadClass("com.android.systemui.statusbar.notification.collection.coordinator.StackCoordinator\$attach\$1")
+                  .findMethod { name("onAfterRenderList") }
+                  .createHook {
+                      before { param ->
+                          val entries = param.args[0] as? MutableList<Any?> ?: return@before
+                          if (entries.isEmpty()) return@before
+                          val filtered = ArrayList<Any?>()
+                          entries.forEach { entry ->
+                              val representative =
+                                  entry?.callMethod("getRepresentativeEntry") ?: return@forEach
+                              val ranking = representative.getFieldOrNull("mRanking") ?: return@forEach
+                              val importance = ranking.callMethod("getImportance") as? Int ?: return@forEach
+                              if (importance > 1) filtered.add(entry)
+                          }
+                          if (filtered.size != entries.size) {
+                              param.args[0] = filtered
+                          }
+                      }
+                  }
+          }'''
+          src = replace_block(src, "private fun systemUi() {", new_system_ui)
+          p.write_text(src, encoding="utf-8")
+
+          # 2) NotificationSettingsNoWhiteList: 反射写 static final 改为 hook canNotificationSlide
+          p = B / "singlepackage/systemui/NotificationSettingsNoWhiteList.kt"
+          p.write_text(r'''package com.yifeplayte.wommo.hook.hooks.singlepackage.systemui
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findMethod
+          import io.github.lingqiqi5211.ezhooktool.core.getFieldOrNull
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.core.putField
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+
+          @Suppress("unused")
+          object NotificationSettingsNoWhiteList : BaseHook() {
+              override val key = "notification_settings_no_white_list"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  loadClass("com.android.systemui.statusbar.notification.policy.AppMiniWindowManagerImpl")
+                      .findMethod { name("canNotificationSlide") }
+                      .createHook {
+                          before { param ->
+                              val settingsManager =
+                                  param.thisObject.getFieldOrNull("notificationSettingsManager") ?: return@before
+                              val allowAll = object : ArrayList<Any?>() {
+                                  override fun contains(element: Any?): Boolean = true
+                              }
+                              settingsManager.putField("mAllowNotificationSlide", allowAll)
+                              settingsManager.putField("mAllowNotificationSlideLocal", allowAll)
+                          }
+                      }
+              }
+          }
+          ''', encoding="utf-8")
+          print("patched: ShowNotificationImportance, NotificationSettingsNoWhiteList")
+          PY
+      - name: Add notification and security hooks
+        run: |
+          set -e
+          B=app/src/main/java/com/yifeplayte/wommo/hook/hooks
+
+          cat > "$B/singlepackage/settings/AllowManageAllNotifications.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.settings
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.findMethod
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object AllowManageAllNotifications : BaseHook() {
+              override val key = "allow_manage_all_notifications"
+              override val isEnabled get() = true
+
+              private val settingsClasses = arrayOf(
+                  "com.android.settings.notification.app.AppNotificationSettings",
+                  "com.android.settings.notification.app.ChannelNotificationSettings",
+                  "com.android.settings.notification.AppNotificationSettings",
+                  "com.android.settings.notification.ChannelNotificationSettings",
+              )
+
+              override fun hook() {
+                  settingsClasses.forEach { className ->
+                      runCatching {
+                          loadClass(className)
+                              .findAllMethods { name("setupBlock") }
+                              .createHooks {
+                                  after { param ->
+                                      runCatching { enableBlockPreference(param.thisObject) }
+                                  }
+                              }
+                      }
+                  }
+                  runCatching {
+                      val channel = loadClass("android.app.NotificationChannel")
+                      channel.findMethod { name("isBlockable") }.createHook {
+                          before { param -> param.result = true }
+                      }
+                      channel.findAllMethods { name("setBlockable") }.createHooks {
+                          before { param -> param.args[0] = true }
+                      }
+                  }
+              }
+
+              private fun enableBlockPreference(fragment: Any) {
+                  val findPreference = fragment.javaClass.methods.firstOrNull {
+                      it.name == "findPreference" && it.parameterCount == 1
+                  } ?: return
+                  val preference = findPreference.invoke(fragment, "block") ?: return
+                  preference.javaClass
+                      .getMethod("setEnabled", Boolean::class.javaPrimitiveType!!)
+                      .invoke(preference, true)
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/securitycenter/DisableSafepayAutoScan.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableSafepayAutoScan : BaseHook() {
+              override val key = "disable_safepay_auto_scan"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  runCatching {
+                      loadClass("w4.l").findAllMethods { name("n") }.createHooks {
+                          before { param -> param.result = false }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/securitycenter/DisableRootDetection.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableRootDetection : BaseHook() {
+              override val key = "disable_root_detection"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  runCatching {
+                      loadClass("w4.k").findAllMethods { name("f") }.createHooks {
+                          before { param -> param.result = false }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/securitycenter/BypassAdbInstallVerify.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object BypassAdbInstallVerify : BaseHook() {
+              override val key = "bypass_adb_install_verify"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  runCatching {
+                      loadClass("com.miui.permcenter.install.AdbInstallVerifyActivity\$b")
+                          .findAllMethods { name("a") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/securitycenter/LockOneHundredPoints.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import android.content.Context
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object LockOneHundredPoints : BaseHook() {
+              override val key = "lock_one_hundred_points"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  listOf(
+                      "com.miui.securityscan.ui.main.MainContentFrame",
+                      "com.miui.securityscan.ui.main.MainContentFrameFold",
+                      "com.miui.securityscan.ui.main.MainContentFrameLite",
+                  ).forEach { className ->
+                      runCatching {
+                          loadClass(className)
+                              .findAllMethods { name("onClick") }
+                              .createHooks {
+                                  before { param -> param.result = null }
+                              }
+                      }
+                  }
+                  runCatching {
+                      val scoreManager = loadClass("com.miui.securityscan.scanner.ScoreManager")
+                      scoreManager.findAllMethods { name("q") }.createHooks {
+                          before { param -> param.result = 0 }
+                      }
+                      scoreManager.findAllMethods { name("j") }.createHooks {
+                          before { param -> param.result = 100 }
+                      }
+                      scoreManager.findAllMethods { name("c") }.createHooks {
+                          before { param -> param.result = null }
+                      }
+                  }
+                  // 缓存路径：MainContentFrame.s(I) 直接读 key_score_in_security，绕开 ScoreManager
+                  runCatching {
+                      loadClass("aj.z")
+                          .findAllMethods {
+                              name("s")
+                              params(Context::class.java)
+                          }
+                          .createHooks {
+                              before { param -> param.result = 100 }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableCloudConfigSync.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableCloudConfigSync : BaseHook() {
+              override val key = "disable_cloud_config_sync"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // i.d() 向线程池提交 i.e()（拉 /v2/cloud_config/query 并写 SharedPreferences "cloudConfig"）
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.i")
+                          .findAllMethods { name("d") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableAppInfoUpload.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableAppInfoUpload : BaseHook() {
+              override val key = "disable_app_info_upload"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // util.a.f(...) 把上传任务丢线程池；实际上传在 util.a.g(...)（POST /avl/upload）
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.util.a")
+                          .findAllMethods { name("f") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.util.a")
+                          .findAllMethods { name("g") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableInstallRiskControl.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableInstallRiskControl : BaseHook() {
+              override val key = "disable_install_risk_control"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // 风控等级：0=无风控；1/2/3 分别弹频繁安装/验证等弹窗（InstallPrepareAlertActivity.e1）
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.model.RiskControlRules")
+                          .findAllMethods { name("getCurrentLevel") }
+                          .createHooks {
+                              before { param -> param.result = 0 }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableSafeModeTip.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableSafeModeTip : BaseHook() {
+              override val key = "disable_safe_mode_tip"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // g(...) 弹 safe_mode_open_default_notice_popup
+                  runCatching {
+                      loadClass("y2.t")
+                          .findAllMethods { name("g") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+                  // b(Context) 处理“默认开启安全守护”（open_safe_mode_by_default）
+                  runCatching {
+                      loadClass("y2.t")
+                          .findAllMethods { name("b") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableVirusScan.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableVirusScan : BaseHook() {
+              override val key = "disable_virus_scan"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // b0.e(pkg, apkInfo, cont) = NewVirusScanner 入口（suspend，返 Virus?）
+                  //   e() 内部：checkSupported() ? g()（新 SDK/guardprovider AIDL） : f()（legacy）
+                  // 三处都置 null = “未发现病毒”，与“不扫描时返回 null”同语义
+                  runCatching {
+                      val scanner = loadClass("com.miui.packageInstaller.b0")
+                      listOf("e", "f", "g").forEach { methodName ->
+                          runCatching {
+                              scanner.findAllMethods { name(methodName) }.createHooks {
+                                  before { param -> param.result = null }
+                              }
+                          }
+                      }
+                  }
+                  // 上游总开关：k2.h.m(k2.h) 为真才走扫描（k2/h$o$b.invokeSuspend）
+                  runCatching {
+                      loadClass("k2.h")
+                          .findAllMethods { name("m") }
+                          .createHooks {
+                              before { param -> param.result = false }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableUnregisteredAppDialog.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableUnregisteredAppDialog : BaseHook() {
+              override val key = "disable_unregistered_app_dialog"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // o1() 里：if (H1()) 弹 newUnregisteredDialog（“风险提示 / 无法进行联网检测 / 单次安装授权”）
+                  // else 走 S1() = showDetailFragment。H1() -> false 即跳过弹窗直接进详情页
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.NewInstallerPrepareActivity")
+                          .findAllMethods { name("H1") }
+                          .createHooks {
+                              before { param -> param.result = false }
+                          }
+                  }
+                  // 云端参数侧：guardprovider 被卸载/网络被拦时不再判为“新未注册”
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.model.CloudParams")
+                          .findAllMethods { name("isNewUnregistered") }
+                          .createHooks {
+                              before { param -> param.result = false }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisablePureModeDialog.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisablePureModeDialog : BaseHook() {
+              override val key = "disable_pure_mode_dialog"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // X1() = showPureDialog（Lr2/F$a;->a），“纯净模式”安装管控弹窗
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.NewInstallerPrepareActivity")
+                          .findAllMethods { name("X1") }
+                          .createHooks {
+                              before { param -> param.result = null }
+                          }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DiagnoseDialogShow.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import android.util.Log
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DiagnoseDialogShow : BaseHook() {
+              override val key = "diagnose_dialog_show"
+              override val isEnabled get() = false
+
+              override fun hook() {
+                  // 诊断用：谁弹的窗，栈里直接看得到
+                  listOf(
+                      "miuix.appcompat.app.v",
+                      "miuix.appcompat.app.AlertDialog",
+                  ).forEach { className ->
+                      runCatching {
+                          loadClass(className)
+                              .findAllMethods { name("show") }
+                              .createHooks {
+                                  before {
+                                      Log.e(
+                                          "WOMMO_DIAG",
+                                          "dialog show: " + className + "\n" +
+                                              Log.getStackTraceString(Throwable())
+                                      )
+                                  }
+                              }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableOfflineUnregisteredPopup.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableOfflineUnregisteredPopup : BaseHook() {
+              override val key = "disable_offline_unregistered_popup"
+              // 日志已证实：点“继续安装”→ 仅显示 single_authorize_btn 菜单；点菜单 → InstallProgressActivity →
+              //   start normal install（全程无验证弹框）。因此 b2 直接走 T0(false,true) 可一步到安装
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // t2.r.b2(this, view) = “安装”按钮点击 → new Lr2/C(...).e(...)
+                  //   → 弹 offline_unregistered_install_popup（风险提示 / 无法进行联网检测）
+                  // 用户点“继续安装”的真实链路：Lt2/f.onClick → t2.r.c1 → d2 → t2.r.n0()
+                  // d2 只用 this$0 调 n0()，不碰 dialog，所以可直短路弹窗并继续安装
+                  // 回退（2026-11-01）：实测 t2.r.n0() 是「取消安装」（进入 CancelInstall 页）
+                  //   Lt2/e.onClick → t2.r.p1 → c2 = 仅把 MenuItem 设为可见（引导去“单次安装授权”）
+                  //   Lt2/f.onClick → t2.r.c1 → d2 → n0() = 取消
+                  //   两个按钮都不是“直接安装”，当前 hook 停用，待定位授权后的真实安装入口
+                  // 弹窗按钮实测：Lt2/e → c2（仅显示“单次安装授权”菜单）；Lt2/f → c1→d2→n0()（取消）
+                  // “单次安装授权”真实链：MenuItem → NewInstallerPrepareActivity.J1()
+                  //   → Z1() → q2.c.T0(false,true) → J0(activity,false) → o2.d.i(...) 启动安装
+                  // 所以点“安装”时直接走 T0(false,true)，等价于用户去点了那个授权入口
+                  runCatching {
+                      val installerView = loadClass("t2.r")
+                      val bool = Boolean::class.javaPrimitiveType!!
+                      var cls: Class<*>? = installerView
+                      var target: java.lang.reflect.Method? = null
+                      while (cls != null && cls != Any::class.java && target == null) {
+                          target = runCatching {
+                              cls!!.getDeclaredMethod("T0", bool, bool).apply { isAccessible = true }
+                          }.getOrNull()
+                          cls = cls.superclass
+                      }
+                      val t0 = target
+                      if (t0 != null) {
+                          installerView.findAllMethods { name("b2") }.createHooks {
+                              before { param ->
+                                  param.result = null
+                                  runCatching { t0.invoke(param.args[0], false, true) }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DiagnoseInstallFlow.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import android.util.Log
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DiagnoseInstallFlow : BaseHook() {
+              override val key = "diagnose_install_flow"
+              override val isEnabled get() = false
+
+              private const val TAG = "WOMMO_DIAG"
+
+              private fun hookAll(className: String, methodName: String, isBefore: Boolean, msg: (Array<Any?>) -> String) {
+                  runCatching {
+                      loadClass(className).findAllMethods { name(methodName) }.createHooks {
+                          if (isBefore) {
+                              before { p -> runCatching { Log.i(TAG, msg(p.args)) } }
+                          } else {
+                              after { p -> runCatching { Log.i(TAG, msg(p.args)) } }
+                          }
+                      }
+                  }
+              }
+
+              override fun hook() {
+                  // 分支条件
+                  hookAll("h2.b", "m", false) { _ -> "h2.b.m() called" }
+                  hookAll("com.android.packageinstaller.utils.u", "b", false) { a ->
+                      if (a.size == 2) "u.a.b(virus=${a[0]}, apk=${a[1]})" else "u.a.b args=${a.size}"
+                  }
+                  // 安装按钮分支
+                  hookAll("t2.r", "a2", true) { a -> "t2.r.a2() entered" }
+                  hookAll("t2.r", "f2", true) { a -> "t2.r.f2() -> 不绑弹窗" }
+                  hookAll("t2.r", "b2", true) { a -> "t2.r.b2() -> 弹窗分支" }
+                  hookAll("r2.C", "e", true) { a -> "r2.C.e() dialog.show()" }
+                  // 授权/安装链路
+                  hookAll("q2.c", "T0", true) { a -> "q2.c.T0 args=${a.joinToString()}" }
+                  hookAll("q2.c", "J0", true) { a -> "q2.c.J0 args=${a.joinToString()}" }
+                  hookAll("o2.d", "h", true) { a -> "o2.d.h() 构建安装框" }
+                  hookAll("o2.d", "e", true) { a -> "o2.d.e type=${a.getOrNull(2)}" }
+              }
+          }
+          EOF
+
+          cat > "$B/singlepackage/packageinstaller/DisableNetworkErrorNotice.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableNetworkErrorNotice : BaseHook() {
+              override val key = "disable_network_error_notice"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // s2.b.F(ApkInfo) 的逻辑：
+                  //   u.a.b(virus, apk) == true  -> null（已免检/被禁）
+                  //   virus != null              -> null（已有扫描结果）
+                  //   否则                        -> new NetworkErrorObject(...)  ← 详情页那条“网络异常，无法进行联网检测”
+                  // 本模块的 DisableVirusScan 会把 virus 置 null，因此这里恒返回 null 才不会反向触发该提示
+                  runCatching {
+                      loadClass("s2.b").findAllMethods { name("F") }.createHooks {
+                          before { param -> param.result = null }
+                      }
+                  }
+              }
+          }
+          EOF
+      - name: Patch upstream hooks (channel + menu)
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          B = pathlib.Path("app/src/main/java/com/yifeplayte/wommo/hook/hooks")
+
+
+          def replace_block(src, signature, new_block):
+              start = src.index(signature)
+              i = src.index("{", start)
+              depth = 0
+              end = -1
+              for j in range(i, len(src)):
+                  if src[j] == "{":
+                      depth += 1
+                  elif src[j] == "}":
+                      depth -= 1
+                      if depth == 0:
+                          end = j + 1
+                          break
+              assert end > 0, signature
+              return src[:start] + new_block + src[end:]
+
+
+          # 3) RedirectToNotificationChannelSetting: 四段式改单段自包含
+          p = B / "singlepackage/systemui/RedirectToNotificationChannelSetting.kt"
+          src = p.read_text(encoding="utf-8")
+          new_hook = r'''override fun hook() {
+              loadClass("com.miui.systemui.notification.NotificationSettingsHelper")
+                  .findMethod {
+                      name("startAppNotificationSettings")
+                      params(
+                          Context::class.java,
+                          String::class.java,
+                          String::class.java,
+                          Int::class.javaPrimitiveType!!,
+                          String::class.java
+                      )
+                  }
+                  .createHook {
+                      before { param ->
+                          val args = param.args
+                          val pkg = args[1] as? String ?: return@before
+                          val uid = args[3] as? Int ?: return@before
+                          val channelId = args[4] as? String ?: return@before
+                          val intent = Intent(Intent.ACTION_MAIN).apply {
+                              addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                              setClassName("com.android.settings", "com.android.settings.SubSettings")
+                              putExtra(
+                                  ":android:show_fragment",
+                                  "com.android.settings.notification.ChannelNotificationSettings"
+                              )
+                              putExtra(Settings.EXTRA_APP_PACKAGE, pkg)
+                              putExtra(Settings.EXTRA_CHANNEL_ID, channelId)
+                              putExtra("app_uid", uid)
+                          }
+                          val userHandleCurrent =
+                              UserHandle::class.java.getStaticFieldOrNullAs<Any?>("CURRENT")
+                          EzXposed.appContext.callMethod("startActivityAsUser", intent, userHandleCurrent)
+                          param.result = null
+                      }
+                  }
+          }'''
+          src = replace_block(src, "override fun hook() {", new_hook)
+          p.write_text(src, encoding="utf-8")
+
+          # 4) AddOpenByDefaultEntry: 追加菜单项与点击处理
+          p = B / "singlepackage/securitycenter/AddOpenByDefaultEntry.kt"
+          src = p.read_text(encoding="utf-8")
+          if "import android.view.Menu\n" not in src:
+              src = src.replace(
+                  "import android.view.View\n",
+                  "import android.view.Menu\nimport android.view.MenuItem\nimport android.view.View\n",
+                  1,
+              )
+          if "OPEN_BY_DEFAULT_MENU_ID" not in src:
+              src = src.replace(
+                  'override val key = "add_open_by_default_entry"',
+                  'override val key = "add_open_by_default_entry"\n'
+                  "private const val OPEN_BY_DEFAULT_MENU_ID = 235864065",
+                  1,
+              )
+          anchor = 'loadClass("com.miui.appmanager.ApplicationsDetailsActivity")'
+          assert anchor in src
+          nl = src.index("\n", src.index(anchor)) + 1
+          extra = r'''
+              clazzApplicationsDetailsActivity.findMethod {
+                  name("onCreateOptionsMenu")
+                  params(Menu::class.java)
+              }.createHook {
+                  after { param ->
+                      val menu = param.args[0] as? Menu ?: return@after
+                      if (menu.findItem(OPEN_BY_DEFAULT_MENU_ID) == null) {
+                          menu.add(0, OPEN_BY_DEFAULT_MENU_ID, 0, "默认打开")
+                      }
+                  }
+              }
+
+              clazzApplicationsDetailsActivity.findMethod {
+                  name("onOptionsItemSelected")
+                  params(MenuItem::class.java)
+              }.createHook {
+                  before { param ->
+                      val item = param.args[0] as? MenuItem ?: return@before
+                      if (item.itemId != OPEN_BY_DEFAULT_MENU_ID) return@before
+                      val activity = param.thisObject as? Activity ?: return@before
+                      startActionAppOpenByDefaultSettings(activity)
+                      param.result = true
+                  }
+              }
+          '''
+          src = src[:nl] + extra + src[nl:]
+          p.write_text(src, encoding="utf-8")
+          print("patched: RedirectToNotificationChannelSetting, AddOpenByDefaultEntry")
+          PY
+      - name: Fix AddOpenByDefaultEntry null-safe
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path(
+              "app/src/main/java/com/yifeplayte/wommo/hook/hooks/"
+              "singlepackage/securitycenter/AddOpenByDefaultEntry.kt"
+          )
+          src = p.read_text(encoding="utf-8")
+
+          if "core.findMethodOrNull" not in src:
+              src = src.replace(
+                  "import io.github.lingqiqi5211.ezhooktool.core.findMethod\n",
+                  "import io.github.lingqiqi5211.ezhooktool.core.findMethod\n"
+                  "import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull\n",
+                  1,
+              )
+
+          before = src
+          src = src.replace(
+              'findMethod { name("initView") }',
+              'findMethodOrNull { name("initView") }?',
+          )
+          src = src.replace(
+              'findMethod { name("onClick") }',
+              'findMethodOrNull { name("onClick") }?',
+          )
+          src = src.replace(
+              "findMethod {\n        name(",
+              "findMethodOrNull {\n        name(",
+          )
+          src = src.replace("}.createHook {", "}?.createHook {")
+          assert src != before, "AddOpenByDefaultEntry patch not applied"
+          p.write_text(src, encoding="utf-8")
+          print("AddOpenByDefaultEntry: initView/onClick made null-safe")
+          PY
+
+      - name: Rewrite RemoveXlDownload
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/downloadprovider/RemoveXlDownload.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.downloadprovider
+
+          import android.content.Context
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+          import java.io.File
+
+          @Suppress("unused")
+          object RemoveXlDownload : BaseHook() {
+              override val key = "remove_xl_download"
+
+              override fun hook() {
+                  // 把迅雷引擎日志目录从 /storage/emulated/0/.xlDownload 改到应用私有目录
+                  loadClass("com.android.providers.downloads.config.XLConfig")
+                      .findMethodOrNull {
+                          name("setDebug")
+                          params(
+                              Context::class.java,
+                              java.lang.Boolean.TYPE,
+                              String::class.java
+                          )
+                      }
+                      ?.createHook {
+                          before { param ->
+                              val ctx = param.args[0] as? Context ?: return@before
+                              val safeDir = File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "xl")
+                              param.args[2] = File(safeDir, "dp.log").absolutePath
+                          }
+                      }
+
+                  // 兜底：任何仍指向根目录 .xlDownload 的建目录请求一律拒绝
+                  loadClass("com.android.providers.downloads.util.FileUtil")
+                      .findMethodOrNull {
+                          name("createFile")
+                          params(String::class.java)
+                      }
+                      ?.createHook {
+                          before { param ->
+                              val path = param.args[0] as? String ?: return@before
+                              if (path.contains(".xlDownload")) {
+                                  param.result = null
+                              }
+                          }
+                      }
+              }
+          }
+          EOF
+          echo "RemoveXlDownload.kt rewritten"
+
+      - name: Drop AddOpenByDefaultEntry (initView missing on this ROM)
+        run: |
+          rm -f app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/AddOpenByDefaultEntry.kt
+          echo "AddOpenByDefaultEntry.kt removed"
+
+      - name: Add AddOpenByDefaultMenuEntry
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter/AddOpenByDefaultMenuEntry.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import android.app.Activity
+          import android.content.Intent
+          import android.provider.Settings
+          import androidx.core.net.toUri
+          import android.view.Menu
+          import android.view.MenuItem
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+
+          @Suppress("unused")
+          object AddOpenByDefaultMenuEntry : BaseHook() {
+              override val key = "add_open_by_default_entry"
+
+              private const val MENU_ID = 235864065
+
+              private fun openByDefaultSettings(activity: Activity) {
+                  val pkgName = activity.intent.getStringExtra("package_name") ?: return
+                  val intent = Intent().apply {
+                      action = Settings.ACTION_APP_OPEN_BY_DEFAULT_SETTINGS
+                      addCategory(Intent.CATEGORY_DEFAULT)
+                      data = "package:$pkgName".toUri()
+                      addFlags(Intent.FLAG_ACTIVITY_NO_HISTORY)
+                      addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS)
+                  }
+                  activity.startActivity(intent)
+              }
+
+              override fun hook() {
+                  val clazz = loadClass("com.miui.appmanager.ApplicationsDetailsActivity")
+
+                  val createMenu = clazz.findMethodOrNull {
+                      name("onCreateOptionsMenu")
+                      params(Menu::class.java)
+                  }
+                  if (createMenu != null) {
+                      createMenu.createHook {
+                          after { param ->
+                              val menu = param.args[0] as? Menu
+                              if (menu != null && menu.findItem(MENU_ID) == null) {
+                                  menu.add(0, MENU_ID, 0, "默认打开")
+                              }
+                          }
+                      }
+                  }
+
+                  val selectItem = clazz.findMethodOrNull {
+                      name("onOptionsItemSelected")
+                      params(MenuItem::class.java)
+                  }
+                  if (selectItem != null) {
+                      selectItem.createHook {
+                          before { param ->
+                              val item = param.args[0] as? MenuItem
+                              if (item != null && item.itemId == MENU_ID) {
+                                  val activity = param.thisObject as? Activity
+                                  if (activity != null) {
+                                      openByDefaultSettings(activity)
+                                      param.result = true
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+          echo "AddOpenByDefaultMenuEntry.kt added"
+
+      - name: Set app version
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path("app/build.gradle.kts")
+          src = p.read_text(encoding="utf-8")
+          src = src.replace(
+              "versionCode = 1",
+              'versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()',
+              1,
+          )
+          src = src.replace(
+              'versionName = DateTimeFormatter.ofPattern("yyyyMMddHHmmss").format(LocalDateTime.now())',
+              'versionName = System.getenv("VERSION_NAME") ?: "UNVERSIONED"',
+              1,
+          )
+          assert 'System.getenv("VERSION_CODE")' in src, "versionCode not patched"
+          assert 'System.getenv("VERSION_NAME")' in src, "versionName not patched"
+          p.write_text(src, encoding="utf-8")
+          print("app version patched")
+          PY
+          grep -nE "versionCode|versionName" app/build.gradle.kts
+          echo "VERSION_CODE=$VERSION_CODE VERSION_NAME=$VERSION_NAME"
+
+      - name: Remove GooglePlayServices feature
+        run: |
+          set -e
+          H=app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage
+          rm -f "$H/googleplayservices/FakeHotspotDisabledForQuickShare.kt"
+          rm -f "$H/GooglePlayServices.kt"
+          rm -f app/src/main/java/com/yifeplayte/wommo/activity/sections/GooglePlayServices.kt
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path("app/src/main/java/com/yifeplayte/wommo/activity/pages/HomePage.kt")
+          lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+          out = [
+              line for line in lines
+              if "activity.sections.googlePlayServices" not in line
+              and line.strip() != "googlePlayServices()"
+          ]
+          removed = len(lines) - len(out)
+          assert removed == 2, "expected exactly 2 lines removed, got %d" % removed
+          p.write_text("".join(out), encoding="utf-8")
+          print("HomePage.kt: googlePlayServices() removed")
+          PY
+          echo "GooglePlayServices feature removed"
+
+      - name: Make unsigned release
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          p = pathlib.Path("app/build.gradle.kts")
+          src = p.read_text(encoding="utf-8")
+          src, n = re.subn(
+              r'\n[ \t]*signingConfig\s*=\s*signingConfigs\.getByName\("debug"\)',
+              '',
+              src,
+          )
+          assert n == 1, "expected exactly 1 signingConfig line, got %d" % n
+          p.write_text(src, encoding="utf-8")
+          print("release signingConfig removed -> unsigned APK")
+          PY
+          grep -n signingConfig app/build.gradle.kts || true
+
+      - name: Add RemoveNotificationWhiteList
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/systemui/RemoveNotificationWhiteList.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.systemui
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.getStaticFieldOrNullAs
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.core.putField
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object RemoveNotificationWhiteList : BaseHook() {
+              override val key = "notification_settings_no_white_list"
+              override val isEnabled get() = true
+
+              private fun allowAll(): ArrayList<Any?> = object : ArrayList<Any?>() {
+                  override fun contains(element: Any?): Boolean = true
+              }
+
+              private fun inject(target: Any?) {
+                  if (target == null) return
+                  runCatching { target.putField("mAllowFloatPackages", allowAll()) }
+                  runCatching { target.putField("mAllowKeyguardPackages", allowAll()) }
+                  runCatching { target.putField("mCanShowBadgePackages", allowAll()) }
+              }
+
+              override fun hook() {
+                  val clazz = loadClass("com.miui.systemui.notification.NotificationSettingsManager")
+
+                  runCatching {
+                      inject(clazz.getStaticFieldOrNullAs<Any>("sINSTANCE"))
+                  }
+
+                  listOf("onCloudDataUpdated", "onLocalDataUsed").forEach { methodName ->
+                      clazz.findAllMethods { name(methodName) }.createHooks {
+                          after { param -> inject(param.thisObject) }
+                      }
+                  }
+              }
+          }
+          EOF
+          echo "RemoveNotificationWhiteList.kt added"
+
+      - name: Patch scope list
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path("app/src/main/resources/META-INF/xposed/scope.list")
+          lines = [l.strip() for l in p.read_text(encoding="utf-8").splitlines() if l.strip()]
+          lines = [l for l in lines if l != "com.google.android.gms"]
+          if "com.android.thememanager" not in lines:
+              lines.append("com.android.thememanager")
+          if "com.miui.packageinstaller" not in lines:
+              lines.append("com.miui.packageinstaller")
+          p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+          print("scope entries:", len(lines))
+          print(p.read_text(encoding="utf-8"))
+          PY
+
+      - name: Patch MainHook - skip bootaware process
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          p = pathlib.Path("app/src/main/java/com/yifeplayte/wommo/hook/MainHook.kt")
+          src = p.read_text(encoding="utf-8")
+
+          FIELD = '    private var processName: String = ""\n'
+          SKIPSET = '    private val skippedProcesses = setOf("com.miui.securitycenter.bootaware")\n'
+          RECORD = '        processName = param.processName\n'
+          GUARD = '        if (processName in skippedProcesses) return\n'
+
+
+          def insert_after(text, anchor, payload):
+              n = text.count(anchor)
+              assert n == 1, "anchor not unique: %r -> %d" % (anchor, n)
+              idx = text.index(anchor) + len(anchor)
+              return text[:idx] + "\n" + payload + text[idx:]
+
+
+          src = insert_after(src, "class MainHook : XposedModule() {", FIELD + SKIPSET)
+          src = insert_after(src, "override fun onModuleLoaded(param: ModuleLoadedParam) {", RECORD)
+          src = insert_after(src, "override fun onPackageLoaded(param: PackageLoadedParam) {", GUARD)
+          src = insert_after(src, "override fun onPackageReady(param: PackageReadyParam) {", GUARD)
+          src = insert_after(src, "private fun installHooks() {", GUARD)
+
+          p.write_text(src, encoding="utf-8")
+          print("MainHook.kt patched: skip com.miui.securitycenter.bootaware")
+          for i, line in enumerate(src.splitlines(), 1):
+              if "skippedProcesses" in line or "processName" in line:
+                  print("  L%d | %s" % (i, line))
+          PY
+
+      - name: Assemble release
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Verify output
+        run: |
+          set -e
+          ls -l app/build/outputs/apk/release/
+          sha256sum app/build/outputs/apk/release/*.apk
+          echo "NOTE: this APK is UNSIGNED - sign it in MT before installing."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wommo-${{ env.VERSION_NAME }}-unsigned
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
