@@ -1400,6 +1400,58 @@ jobs:
           print("initAppContext call sites: %d unnormalized" % len(offenders))
           PY
 
+      - name: Resolve AOSP menu titles with the module resources
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          B = "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter"
+
+          # menu.add(group, id, order, titleRes) makes the host MenuBuilder resolve the title via
+          # its own Resources. R.string.aosp_* belongs to the module package 0x45, which only
+          # exists after addModuleAssetPath has attached the module APK to that exact Resources
+          # instance. Passing an Application context moved that attachment off the Activity's
+          # Resources, so the lookup started throwing NotFoundException. Resolve the string with
+          # the module resources instead and hand the host an already-built CharSequence.
+          TARGETS = [
+              (
+                  B + "/AddAOSPAppInfoEntry.kt",
+                  "0, 0, R.string.aosp_app_info",
+                  '0, 0, moduleString(R.string.aosp_app_info, "AOSP app info")',
+              ),
+              (
+                  B + "/AddAOSPAppManagerEntry.kt",
+                  "0, 0, R.string.aosp_app_manager",
+                  '0, 0, moduleString(R.string.aosp_app_manager, "AOSP app manager")',
+              ),
+          ]
+
+          HELPER = '''
+
+          private fun moduleString(id: Int, fallback: String): String =
+              runCatching { EzXposed.moduleRes.getString(id) }.getOrElse { fallback }
+          '''
+
+          for rel, old, new in TARGETS:
+              p = pathlib.Path(rel)
+              assert p.is_file(), "missing source file: %s" % rel
+              src = p.read_text(encoding="utf-8")
+              assert src.count(old) == 1, "%s: expected 1 occurrence of %r, got %d" % (
+                  rel, old, src.count(old)
+              )
+              anchor = "    override val key = "
+              assert src.count(anchor) == 1, "%s: key anchor not unique" % rel
+              idx = src.index(anchor)
+              end = src.index("\n", idx) + 1
+              src = src[:end] + HELPER.lstrip("\n") + src[end:]
+              assert src.count(old) == 1
+              src = src.replace(old, new)
+              p.write_text(src, encoding="utf-8")
+              print("menu title resolved via moduleRes: %s" % p.name)
+
+          PY
+
       - name: Assemble release
         run: |
           chmod +x gradlew
