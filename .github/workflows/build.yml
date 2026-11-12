@@ -1356,6 +1356,50 @@ jobs:
               print("patched %s: %s -> %s" % (p.name, old, new))
           PY
 
+      - name: Normalize EzXposed app context to the Application
+        run: |
+          set -e
+          python3 - <<'PY'
+          import pathlib
+
+          B = "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage"
+
+          TARGETS = [
+              (
+                  B + "/securitycenter/AddAOSPAppManagerEntry.kt",
+                  "EzXposed.initAppContext(it.thisObject as Activity, true)",
+                  "EzXposed.initAppContext((it.thisObject as Activity).applicationContext, true)",
+              ),
+              (
+                  B + "/securitycenter/AddAOSPAppInfoEntry.kt",
+                  "EzXposed.initAppContext(activity, true)",
+                  "EzXposed.initAppContext(activity.applicationContext, true)",
+              ),
+          ]
+
+          for rel, old, new in TARGETS:
+              p = pathlib.Path(rel)
+              assert p.is_file(), "missing source file: %s" % rel
+              src = p.read_text(encoding="utf-8")
+              n = src.count(old)
+              assert n == 1, "%s: expected exactly 1 occurrence of %r, got %d" % (rel, old, n)
+              p.write_text(src.replace(old, new), encoding="utf-8")
+              print("normalized %s: Activity -> applicationContext" % p.name)
+
+          # Guard: no hook may hand a raw Activity to the global cache again.
+          offenders = []
+          for p in pathlib.Path(B).rglob("*.kt"):
+              for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                  if "initAppContext" not in line:
+                      continue
+                  if "applicationContext" in line:
+                      continue
+                  offenders.append("%s:%d: %s" % (p, i, line.strip()))
+          for o in offenders:
+              print("WARN unnormalized initAppContext -> " + o)
+          print("initAppContext call sites: %d unnormalized" % len(offenders))
+          PY
+
       - name: Assemble release
         run: |
           chmod +x gradlew
