@@ -1466,6 +1466,7 @@ jobs:
           @Suppress("unused")
           object FastInstallParams : BaseHook() {
               override val key = "fast_install_params"
+              override val isEnabled get() = true
 
               override fun hook() {
                   // k2.h$f.invokeSuspend（status 2 时进入）先判 k2.h.A(this) = u0()：
