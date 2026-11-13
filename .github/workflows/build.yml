@@ -1452,6 +1452,39 @@ jobs:
 
           PY
 
+      - name: Add experimental fast-install param hook
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/packageinstaller/FastInstallParams.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object FastInstallParams : BaseHook() {
+              override val key = "fast_install_params"
+
+              override fun hook() {
+                  // k2.h$f.invokeSuspend（status 2 时进入）先判 k2.h.A(this) = u0()：
+                  //   u 字段 >= 1 && 包名在 y2.i 的 effectiveInstall 白名单里。
+                  // 为真时只走 "effectiveInstall fullTest passed" 快路径（n() -> d0() 本地
+                  // 构造 CloudParams）；否则发起 4 个并发网络请求（k2.h$f$g/d/e/f）并用
+                  // withTimeout(20000) 等最慢的一个 —— 实测 1.3 秒的加载页停留全在这里。
+                  // A() 全 APK 仅此 1 处调用，强制 true 等价于「本次安装视作已通过 fullTest」，
+                  // 不碰 d0/e0/f0/N 任何后续链路。
+                  runCatching {
+                      loadClass("k2.h")
+                          .findAllMethods { name("A") }
+                          .createHooks { before { param -> param.result = true } }
+                  }
+              }
+          }
+          EOF
+          echo "FastInstallParams.kt added"
+
       - name: Assemble release
         run: |
           chmod +x gradlew
