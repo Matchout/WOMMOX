@@ -1466,7 +1466,9 @@ jobs:
           @Suppress("unused")
           object FastInstallParams : BaseHook() {
               override val key = "fast_install_params"
-              override val isEnabled get() = true
+              // 2.0.9：实验失败——A()=true 会把安装器切进 effective 模式（无详情页、直接装），
+              // 拦截 t1 又会卡在加载页。默认关闭，代码保留以便日后重试。
+              override val isEnabled get() = false
 
               override fun hook() {
                   // k2.h$f.invokeSuspend（status 2 时进入）先判 k2.h.A(this) = u0()：
@@ -1493,6 +1495,139 @@ jobs:
           }
           EOF
           echo "FastInstallParams.kt added"
+
+      - name: Add FullSafe hint filter hook
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/packageinstaller/HideFullSafeHint.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import com.yifeplayte.wommo.hook.hooks.HookGuard
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object HideFullSafeHint : BaseHook() {
+              override val key = "hide_full_safe_hint"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // G2.b 是安装器的 CommonAdapter；V(int, J2.b, boolean, boolean) 是 viewObject
+                  // 入列的唯一收敛点（日志 add viewObject 只在这里打）。返回 0 表示未添加，
+                  // 与原有语义一致，不会打乱适配器下标。
+                  // 目标是 FullSafeInstallHintViewObject（该应用未经小米安全审核 条目）：
+                  // 它在 s2.b 有 8 个构造入口（A/o/t/w/z/G/q/y），逐个拦不划算，这里按类型滤。
+                  var loaded: Class<*>? = null
+                  HookGuard.step("HideFullSafeHint", "load-fullsafe-class") {
+                      loaded = loadClass("com.miui.packageInstaller.ui.listcomponets.FullSafeInstallHintViewObject")
+                  }
+                  val hintType = loaded ?: run {
+                      HookGuard.report("HideFullSafeHint")
+                      return
+                  }
+                  HookGuard.step("HideFullSafeHint", "hook-common-adapter") {
+                      loadClass("G2.b")
+                          .findAllMethods { name("V") }
+                          .createHooks {
+                              before { param ->
+                                  val viewObject = param.args.getOrNull(1)
+                                  if (viewObject != null && hintType.isInstance(viewObject)) {
+                                      param.result = 0
+                                  }
+                              }
+                          }
+                  }
+                  HookGuard.report("HideFullSafeHint")
+              }
+          }
+          EOF
+          echo "HideFullSafeHint.kt added"
+
+      - name: Add HookGuard step reporter
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/HookGuard.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks
+
+          import android.util.Log
+
+          /**
+           * 2.0.9：把 hook 内部的 runCatching 换成可上报的 step。
+           *
+           * 背景：BaseHook.init() 只在 hook() 抛异常时打 "Failed init hook"；
+           * hook() 内部用 runCatching 吞掉后，日志里既没有 Inited 也没有 Failed，
+           * 看上去和“没启用”完全一样（FastInstallParams 就是这样静默失效的）。
+           *
+           * 用法：
+           *   HookGuard.step("XxxHook", "label") { ... }
+           *   HookGuard.report("XxxHook")   // hook() 末尾调一次
+           */
+          @Suppress("unused")
+          object HookGuard {
+              private const val TAG = "WOMMO-Guard"
+              private val failures = ArrayList<String>()
+
+              @Synchronized
+              fun step(owner: String, label: String, block: () -> Unit) {
+                  try {
+                      block()
+                  } catch (t: Throwable) {
+                      failures.add(owner + "/" + label + ": " + t.javaClass.simpleName)
+                      Log.w(TAG, "step failed: " + owner + "/" + label, t)
+                  }
+              }
+
+              @Synchronized
+              fun report(owner: String) {
+                  if (failures.isEmpty()) return
+                  Log.w(TAG, owner + " failed steps: " + failures)
+                  failures.clear()
+              }
+          }
+          EOF
+          echo "HookGuard.kt added"
+
+      - name: Add installer ad switch hook
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/packageinstaller/DisableInstallerAd.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.packageinstaller
+
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import com.yifeplayte.wommo.hook.hooks.HookGuard
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          @Suppress("unused")
+          object DisableInstallerAd : BaseHook() {
+              override val key = "disable_installer_ad"
+              override val isEnabled get() = true
+
+              override fun hook() {
+                  // B0.c = 安装器设置类（单例 B0.c.g(Context)，SP 读写委托 B0.d）：
+                  //   o()Z  → getBoolean("ads_enable")            ← 广告总开关
+                  //   p()Z  → getBoolean("app_store_recommend")     ← 应用商店推荐位
+                  // 对应 HyperCeiler DisableAd 的 mAdsEnableMethod / mAppStoreRecommendMethod
+                  // （它的 DexKit matcher 是“含某字符串且返回 boolean”）。
+                  // 不需要写 SP：判定点恒 false 即可，不会影响设置页显示。
+                  HookGuard.step("DisableInstallerAd", "ads_enable") {
+                      loadClass("B0.c")
+                          .findAllMethods { name("o") }
+                          .createHooks { before { param -> param.result = false } }
+                  }
+                  HookGuard.step("DisableInstallerAd", "app_store_recommend") {
+                      loadClass("B0.c")
+                          .findAllMethods { name("p") }
+                          .createHooks { before { param -> param.result = false } }
+                  }
+                  HookGuard.report("DisableInstallerAd")
+              }
+          }
+          EOF
+          echo "DisableInstallerAd.kt added"
 
       - name: Assemble release
         run: |
