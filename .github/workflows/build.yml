@@ -1481,6 +1481,14 @@ jobs:
                           .findAllMethods { name("A") }
                           .createHooks { before { param -> param.result = true } }
                   }
+                  // 2.0.8：A()=true 会让 d0() 把 u 置 2，J()==2 时 L1() 直接调 t1()
+                  // 启动安装（game_install_mode=quick_install）——表现为「未点击就自动安装」。
+                  // t1 唯一调用者就是该分支，置空即恢复「停在详情页等用户点安装」。
+                  runCatching {
+                      loadClass("com.miui.packageInstaller.NewInstallerPrepareActivity")
+                          .findAllMethods { name("t1") }
+                          .createHooks { before { param -> param.result = null } }
+                  }
               }
           }
           EOF
