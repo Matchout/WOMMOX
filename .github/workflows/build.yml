@@ -1180,7 +1180,6 @@ jobs:
           import android.view.MenuItem
           import android.widget.Toast
           import com.yifeplayte.wommo.hook.hooks.BaseHook
-          import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull
           import io.github.lingqiqi5211.ezhooktool.core.loadClass
           import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
           import java.lang.reflect.Method
@@ -1228,37 +1227,63 @@ jobs:
 
               override fun hook() {
                   val clazz = loadClass(TARGET)
+                  Log.i(TAG, "hook start, methods=" + clazz.declaredMethods.size)
 
-                  // 不能用 menu.add()：miuix ActionBarDelegateImpl 不为 after 阶段新增项建视图
-                  // （findItem 能找到、size 会变，但界面不显示）。只能复用默认隐藏的槽位。
-                  clazz.findMethodOrNull {
-                      name("onCreateOptionsMenu")
-                      params(Menu::class.java)
-                  }?.createHook {
-                      after { param ->
-                          runCatching {
-                              val menu = param.args.getOrNull(0) as? Menu ?: return@after
-                              val slot = menu.findItem(ID_SLOT) ?: return@after
-                              slot.isVisible = true
-                              slot.setTitle(TITLE)
-                              menu.findItem(ID_PROMPT)?.isVisible = true
-                              Log.i(TAG, "slot ready, size=" + menu.size())
-                          }.onFailure { Log.w(TAG, "menu inject failed", it) }
-                      }
-                  }
+                  // 用精确签名而非 findMethodOrNull：后者会枚举全部 70 个方法，
+                  // 是 WOMMO 版相对 permfg v1.5.6 唯一新增的未验证路径。
+                  // 另外不能用 menu.add()：miuix ActionBarDelegateImpl 不为 after 阶段
+                  // 新增项建视图（findItem 能找到、size 会变，但界面不显示），只能复用隐藏槽位。
+                  runCatching {
+                      val m = clazz.getDeclaredMethod("onCreateOptionsMenu", Menu::class.java)
+                      m.isAccessible = true
+                      m.createHook {
+                          after { param ->
+                              runCatching {
+                                  val menu = param.args.getOrNull(0) as? Menu ?: return@after
 
-                  clazz.findMethodOrNull {
-                      name("onOptionsItemSelected")
-                      params(MenuItem::class.java)
-                  }?.createHook {
-                      before { param ->
-                          val item = param.args.getOrNull(0) as? MenuItem ?: return@before
-                          if (item.itemId != ID_SLOT) return@before
-                          val activity = param.thisObject as? Activity ?: return@before
-                          param.result = true
-                          confirm(activity, clazz)
+                                  // 诊断 1：注入前的完整菜单快照
+                                  val sb = StringBuilder()
+                                  for (i in 0 until menu.size()) {
+                                      val mi = menu.getItem(i)
+                                      sb.append(" [")
+                                          .append(Integer.toHexString(mi.itemId))
+                                          .append(if (mi.isVisible) ":V:" else ":H:")
+                                          .append(mi.title ?: "null")
+                                          .append("]")
+                                  }
+                                  Log.i(TAG, "menu=" + sb.toString())
+
+                                  // 诊断 2：W0() 真实返回值（官方是否判定为摇一摇页）
+                                  val w0 = runCatching {
+                                      val w = clazz.getDeclaredMethod("W0")
+                                      w.isAccessible = true
+                                      w.invoke(param.thisObject)
+                                  }.getOrNull()
+                                  Log.i(TAG, "W0=" + (w0 ?: "unavailable"))
+
+                                  val slot = menu.findItem(ID_SLOT) ?: return@after
+                                  slot.isVisible = true
+                                  slot.setTitle(TITLE)
+                                  menu.findItem(ID_PROMPT)?.isVisible = true
+                                  Log.i(TAG, "slot ready, size=" + menu.size())
+                              }.onFailure { Log.w(TAG, "menu inject failed", it) }
+                          }
                       }
-                  }
+                  }.onFailure { Log.w(TAG, "hook onCreateOptionsMenu failed", it) }
+
+                  runCatching {
+                      val m = clazz.getDeclaredMethod("onOptionsItemSelected", MenuItem::class.java)
+                      m.isAccessible = true
+                      m.createHook {
+                          before { param ->
+                              val item = param.args.getOrNull(0) as? MenuItem ?: return@before
+                              if (item.itemId != ID_SLOT) return@before
+                              val activity = param.thisObject as? Activity ?: return@before
+                              param.result = true
+                              confirm(activity, clazz)
+                          }
+                      }
+                  }.onFailure { Log.w(TAG, "hook onOptionsItemSelected failed", it) }
               }
 
               private fun confirm(activity: Activity, clazz: Class<*>) {
