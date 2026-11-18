@@ -1361,6 +1361,83 @@ jobs:
           EOF
           echo "FixNotificationIconAddView.kt added"
 
+      - name: Add FakeReceiverForFrozenApp
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/xiaomiserviceframework/FakeReceiverForFrozenApp.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.xiaomiserviceframework
+
+          import android.content.Intent
+          import android.content.pm.ResolveInfo
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+
+          /**
+           * 冻结应用仍能收到 xmsf 推送通知。
+           *
+           * xmsf 派发前会查目标 app 的广播接收器：冻结 app 的 receiver 被禁用
+           * → queryBroadcastReceivers(Intent, int) 返回空 → xmsf 走 app_no_receiver 分支
+           * （日志 receive a mipush message, we can see the app, but we can't see the receiver.）
+           * → 上报并丢弃消息、不生成通知。
+           *
+           * 注入一个占位 ResolveInfo 使 isEmpty() 为 false → 走正常派发链
+           * → 由 xmsf 自己构建并 notify（通知本来就是 xmsf 显示的，不转发给 app）。
+           *
+           * 硬约束：
+           * - 只 hook (Intent, int)：ResolveInfoFlags 重载在 xmsf 永不触发，且 API 33+
+           *   嵌套类在低版本会 NoClassDefFoundError，被 protective 吞掉后连第一个 hook 一起装不上
+           * - 注入只设 resolvePackageName：下游读 activityInfo 的调用点会被 null 检查自然跳过，
+           *   填完整 FakeReceiver 反而产生错误统计与无谓 Class.forName 失败
+           * - 列表非空直接返回，不每次拷贝
+           * - 只在主进程 com.xiaomi.xmsf 安装（XMPushService 无 android:process，决策全在主进程）
+           *
+           * 来源：local/mipushenhance/（xmsf 7.5.32-C / 7.5.79-C 两版真机 L3），
+           * 本 hook 不引用任何 xmsf 内部类名，xmsf 重混淆不影响。
+           */
+          @Suppress("unused")
+          object FakeReceiverForFrozenApp : BaseHook() {
+              override val key = "fake_receiver_for_frozen_app"
+              override val isEnabled get() = true
+
+              private const val TAG = "WOMMO-Xmsf"
+              private const val MAIN_PROCESS = "com.xiaomi.xmsf"
+              private const val PLACEHOLDER_PKG = "com.miui.securitycenter"
+
+              override fun hook() {
+                  val processName =
+                      runCatching { android.app.Application.getProcessName() }.getOrNull()
+                  if (processName != null && processName != MAIN_PROCESS) {
+                      android.util.Log.i(TAG, "skip non-main xmsf process: " + processName)
+                      return
+                  }
+
+                  runCatching {
+                      loadClass("android.app.ApplicationPackageManager")
+                          .findMethodOrNull {
+                              name("queryBroadcastReceivers")
+                              params(Intent::class.java, Int::class.javaPrimitiveType!!)
+                          }
+                          ?.createHook {
+                              after { param ->
+                                  val result = param.result
+                                  if (result is List<*> && result.isNotEmpty()) return@after
+                                  if (result != null && result !is List<*>) return@after
+                                  param.result = arrayListOf<Any?>(
+                                      ResolveInfo().apply { resolvePackageName = PLACEHOLDER_PKG }
+                                  )
+                              }
+                          }
+                  }.onFailure {
+                      android.util.Log.e(TAG, "hook queryBroadcastReceivers failed: " + it)
+                  }
+              }
+          }
+          EOF
+          echo "FakeReceiverForFrozenApp.kt added"
+
+
 
       - name: Patch scope list
         run: |
