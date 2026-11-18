@@ -1166,6 +1166,154 @@ jobs:
           EOF
           echo "AddOpenByDefaultMenuEntry.kt added"
 
+      - name: Add PermissionForegroundAll
+        run: |
+          set -e
+          B="app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/securitycenter"
+          cat > "$B/PermissionForegroundAll.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.securitycenter
+
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.util.Log
+          import android.view.Menu
+          import android.view.MenuItem
+          import android.widget.Toast
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findMethodOrNull
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
+          import java.lang.reflect.Method
+          import java.lang.reflect.Modifier
+
+          @Suppress("unused")
+          object PermissionForegroundAll : BaseHook() {
+              override val key = "permission_foreground_all"
+              override val isEnabled get() = true
+
+              private const val TAG = "WOMMO-PermFg"
+              private const val TARGET =
+                  "com.miui.permcenter.permissions.PermissionAppsEditorActivity"
+
+              // 运行时实测 id（静态资源表在本 ROM 上整体偏移 +7，勿改回 0x7F0B0B02 / 0x7F0B0AA8）
+              private const val ID_SLOT = 0x7F0B00C6
+              private const val ID_PROMPT = 0x7F0B0AAF
+
+              private const val TITLE = "仅在使用中允许"
+              private const val ACTION_FOREGROUND = 6
+
+              @Volatile
+              private var applyMethod: Method? = null
+
+              @Volatile
+              private var applyResolved = false
+
+              private fun resolveApply(clazz: Class<*>): Method? {
+                  if (applyResolved) return applyMethod
+                  val found = clazz.declaredMethods.firstOrNull { m ->
+                      !Modifier.isStatic(m.modifiers) &&
+                          m.parameterTypes.size == 2 &&
+                          m.parameterTypes[0].name == "int" &&
+                          m.parameterTypes[1].name == "int" &&
+                          m.returnType.name == "void"
+                  }
+                  if (found != null) {
+                      runCatching { found.isAccessible = true }
+                  }
+                  applyMethod = found
+                  applyResolved = true
+                  Log.i(TAG, "apply method: " + (found?.name ?: "none"))
+                  return found
+              }
+
+              override fun hook() {
+                  val clazz = loadClass(TARGET)
+
+                  // 不能用 menu.add()：miuix ActionBarDelegateImpl 不为 after 阶段新增项建视图
+                  // （findItem 能找到、size 会变，但界面不显示）。只能复用默认隐藏的槽位。
+                  clazz.findMethodOrNull {
+                      name("onCreateOptionsMenu")
+                      params(Menu::class.java)
+                  }?.createHook {
+                      after { param ->
+                          runCatching {
+                              val menu = param.args.getOrNull(0) as? Menu ?: return@after
+                              val slot = menu.findItem(ID_SLOT) ?: return@after
+                              slot.isVisible = true
+                              slot.setTitle(TITLE)
+                              menu.findItem(ID_PROMPT)?.isVisible = true
+                              Log.i(TAG, "slot ready, size=" + menu.size())
+                          }.onFailure { Log.w(TAG, "menu inject failed", it) }
+                      }
+                  }
+
+                  clazz.findMethodOrNull {
+                      name("onOptionsItemSelected")
+                      params(MenuItem::class.java)
+                  }?.createHook {
+                      before { param ->
+                          val item = param.args.getOrNull(0) as? MenuItem ?: return@before
+                          if (item.itemId != ID_SLOT) return@before
+                          val activity = param.thisObject as? Activity ?: return@before
+                          param.result = true
+                          confirm(activity, clazz)
+                      }
+                  }
+              }
+
+              private fun confirm(activity: Activity, clazz: Class<*>) {
+                  if (activity.isFinishing || activity.isDestroyed) {
+                      apply(activity, clazz)
+                      return
+                  }
+                  runCatching {
+                      AlertDialog.Builder(activity)
+                          .setTitle(TITLE)
+                          .setMessage("确定将该权限组下所有应用的此权限设置为「仅在使用中允许」？")
+                          .setPositiveButton("确定") { _, _ ->
+                              if (!activity.isFinishing && !activity.isDestroyed) {
+                                  apply(activity, clazz)
+                              }
+                          }
+                          .setNegativeButton("取消", null)
+                          .show()
+                  }.onFailure {
+                      Log.w(TAG, "dialog failed, apply directly", it)
+                      apply(activity, clazz)
+                  }
+              }
+
+              private fun apply(activity: Activity, clazz: Class<*>) {
+                  val m = resolveApply(clazz)
+                  if (m == null) {
+                      Log.w(TAG, "no (int,int)void method on " + clazz.name)
+                      toast(activity, "未找到批量设置方法")
+                      return
+                  }
+                  runCatching { m.invoke(activity, ACTION_FOREGROUND, 0) }
+                      .onSuccess {
+                          Log.i(TAG, "applied via " + m.name + " action=" + ACTION_FOREGROUND)
+                          toast(activity, "已设为仅在使用中允许")
+                      }
+                      .onFailure {
+                          Log.w(TAG, "apply failed via " + m.name, it)
+                          toast(activity, "设置失败: " + (it.message ?: ""))
+                      }
+              }
+
+              private fun toast(activity: Activity, msg: String) {
+                  runCatching {
+                      activity.runOnUiThread {
+                          runCatching {
+                              Toast.makeText(activity, msg, Toast.LENGTH_SHORT).show()
+                          }
+                      }
+                  }
+              }
+          }
+          EOF
+          echo "PermissionForegroundAll.kt added"
+
       - name: Set app version
         run: |
           set -e
