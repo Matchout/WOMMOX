@@ -1175,7 +1175,6 @@ jobs:
 
           import android.app.Activity
           import android.app.AlertDialog
-          import android.util.Log
           import android.view.Menu
           import android.view.MenuItem
           import android.widget.Toast
@@ -1184,6 +1183,37 @@ jobs:
           import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHook
           import java.lang.reflect.Method
           import java.lang.reflect.Modifier
+
+          // 诊断日志必须进 LSPosed 面板（BaseHook.init() 的 Inited/Failed 就走这条链），
+          // 不能只写 logcat。这里用同名 object 遮蔽 android.util.Log，调用点无需改动：
+          //   优先 XposedInterface.log(int, String, String)（libxposed API 102）；
+          //   反射失败（EzXposed 类路径变动）时退回 android.util.Log，不抛异常。
+          private fun xlogImpl(tag: String, msg: String) {
+              val ok = runCatching {
+                  val ez = Class.forName("io.github.lingqiqi5211.ezhooktool.xposed.EzXposed")
+                  val base = ez.getDeclaredMethod("getBase").invoke(null)
+                      ?: return@runCatching false
+                  base.javaClass
+                      .getMethod(
+                          "log",
+                          java.lang.Integer.TYPE,
+                          String::class.java,
+                          String::class.java
+                      )
+                      .invoke(base, 4, tag, msg)
+                  true
+              }.getOrDefault(false)
+              if (!ok) android.util.Log.i(tag, msg)
+          }
+
+          @Suppress("unused")
+          private object Log {
+              fun i(tag: String, msg: String) = xlogImpl(tag, msg)
+
+              fun w(tag: String, msg: String, t: Throwable? = null) {
+                  xlogImpl(tag, if (t == null) msg else msg + " | " + t)
+              }
+          }
 
           @Suppress("unused")
           object PermissionForegroundAll : BaseHook() {
