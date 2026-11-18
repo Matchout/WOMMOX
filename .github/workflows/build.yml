@@ -1282,6 +1282,91 @@ jobs:
           EOF
           echo "RemoveNotificationWhiteList.kt added"
 
+      - name: Add FixNotificationIconAddView
+        run: |
+          set -e
+          cat > "app/src/main/java/com/yifeplayte/wommo/hook/hooks/singlepackage/systemui/FixNotificationIconAddView.kt" <<'EOF'
+          package com.yifeplayte.wommo.hook.hooks.singlepackage.systemui
+
+          import android.view.View
+          import android.view.ViewGroup
+          import com.yifeplayte.wommo.hook.hooks.BaseHook
+          import io.github.lingqiqi5211.ezhooktool.core.findAllMethods
+          import io.github.lingqiqi5211.ezhooktool.core.loadClass
+          import io.github.lingqiqi5211.ezhooktool.xposed.dsl.createHooks
+
+          /**
+           * SystemUI 17.03.260226.r 状态栏通知图标重排崩溃修复。
+           *
+           * java.lang.IllegalStateException: The specified child already has a parent
+           *   at android.view.ViewGroup.addViewInner
+           *   at ...collectTracingEach$1.emit
+           *
+           * 本 ROM 的 IconManager.createIcons 把 IconPack.mAodIcon 写成 null，每个通知只创建一个
+           * StatusBarIconView；repeatWhenAttached 在 View 重新 attach 时重建绑定，旧 emit 已排进
+           * Dispatchers.Main.immediate 队列，取消后仍会执行。两次 emit 争同一个 View 时，re-sort
+           * 段的 removeView(自己容器) 对「挂在别处」的 View 是 no-op，紧接着 addView 抛异常。
+           *
+           * 处理：addView 前若 child 仍持有 parent
+           *   - parent 就是目标容器：主动摘除后放行（兜住 mTransitioningViews 保留 mParent 的情况）
+           *   - parent 是别的容器：跳过本次插入（不抢图标），日志限频 3s
+           */
+          @Suppress("unused")
+          object FixNotificationIconAddView : BaseHook() {
+              override val key = "fix_notification_icon_add_view"
+              override val isEnabled get() = true
+
+              private const val TAG = "WOMMO-NiIcons"
+              private var lastLogAt = 0L
+              private var skipCount = 0L
+
+              override fun hook() {
+                  val nicClass = runCatching {
+                      loadClass("com.android.systemui.statusbar.phone.NotificationIconContainer")
+                  }.onFailure {
+                      android.util.Log.e(TAG, "NotificationIconContainer not found: " + it)
+                  }.getOrNull() ?: return
+
+                  runCatching {
+                      loadClass("android.view.ViewGroup")
+                          .findAllMethods { name("addView") }
+                          .createHooks {
+                              before { param ->
+                                  val container = param.thisObject ?: return@before
+                                  if (!nicClass.isInstance(container)) return@before
+
+                                  val child = param.args?.getOrNull(0) as? View ?: return@before
+                                  val existing = child.parent ?: return@before
+
+                                  if (existing === container) {
+                                      runCatching {
+                                          (existing as? ViewGroup)?.removeView(child)
+                                          (container as? ViewGroup)?.removeTransientView(child)
+                                      }
+                                      if (child.parent == null) return@before
+                                  }
+
+                                  skipCount++
+                                  log("skip #" + skipCount + " actual=" + existing.javaClass.simpleName)
+                                  param.result = null
+                              }
+                          }
+                  }.onFailure {
+                      android.util.Log.e(TAG, "hook ViewGroup.addView failed: " + it)
+                  }
+              }
+
+              private fun log(msg: String) {
+                  val now = android.os.SystemClock.elapsedRealtime()
+                  if (now - lastLogAt < 3000L) return
+                  lastLogAt = now
+                  android.util.Log.w(TAG, msg)
+              }
+          }
+          EOF
+          echo "FixNotificationIconAddView.kt added"
+
+
       - name: Patch scope list
         run: |
           set -e
