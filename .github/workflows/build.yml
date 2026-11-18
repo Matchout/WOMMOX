@@ -1317,23 +1317,19 @@ jobs:
               override val isEnabled get() = true
 
               private const val TAG = "WOMMO-NiIcons"
+              private const val NIC_CLASS =
+                  "com.android.systemui.statusbar.phone.NotificationIconContainer"
               private var lastLogAt = 0L
               private var skipCount = 0L
 
               override fun hook() {
-                  val nicClass = runCatching {
-                      loadClass("com.android.systemui.statusbar.phone.NotificationIconContainer")
-                  }.onFailure {
-                      android.util.Log.e(TAG, "NotificationIconContainer not found: " + it)
-                  }.getOrNull() ?: return
-
                   runCatching {
                       loadClass("android.view.ViewGroup")
                           .findAllMethods { name("addView") }
                           .createHooks {
                               before { param ->
                                   val container = param.thisObject ?: return@before
-                                  if (!nicClass.isInstance(container)) return@before
+                                  if (container.javaClass.name != NIC_CLASS) return@before
 
                                   val child = param.args?.getOrNull(0) as? View ?: return@before
                                   val existing = child.parent ?: return@before
@@ -1341,7 +1337,6 @@ jobs:
                                   if (existing === container) {
                                       runCatching {
                                           (existing as? ViewGroup)?.removeView(child)
-                                          (container as? ViewGroup)?.removeTransientView(child)
                                       }
                                       if (child.parent == null) return@before
                                   }
